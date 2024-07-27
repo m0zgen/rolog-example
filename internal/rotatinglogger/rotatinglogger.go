@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+type LogMessage struct {
+	Level   logrus.Level
+	Message string
+	Fields  logrus.Fields
+}
+
 type RotatingLogger struct {
 	Logger         *logrus.Logger
 	checkInterval  time.Duration
@@ -18,9 +24,10 @@ type RotatingLogger struct {
 	zippedArchive  bool
 	logDir         string
 	archivePattern string
+	logChannel     chan LogMessage
 }
 
-func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxAge, maxBackups int, checkInterval time.Duration) *RotatingLogger {
+func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxAge, maxBackups int, checkInterval time.Duration, bufferSize int) *RotatingLogger {
 	logger := logrus.New()
 
 	logger.Formatter = &JournalctlFormatter{}
@@ -48,11 +55,41 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 		zippedArchive:  zippedArchive,
 		logDir:         logDir,
 		archivePattern: archivePattern,
+		logChannel:     make(chan LogMessage, bufferSize),
 	}
 
 	go rotLogger.monitorLogSize(staticFilePath)
+	go rotLogger.processLogMessages()
 
 	return rotLogger
+}
+
+func (rl *RotatingLogger) processLogMessages() {
+	for logMessage := range rl.logChannel {
+		entry := rl.Logger.WithFields(logMessage.Fields)
+		switch logMessage.Level {
+		case logrus.DebugLevel:
+			entry.Debug(logMessage.Message)
+		case logrus.InfoLevel:
+			entry.Info(logMessage.Message)
+		case logrus.WarnLevel:
+			entry.Warn(logMessage.Message)
+		case logrus.ErrorLevel:
+			entry.Error(logMessage.Message)
+		case logrus.FatalLevel:
+			entry.Fatal(logMessage.Message)
+		case logrus.PanicLevel:
+			entry.Panic(logMessage.Message)
+		}
+	}
+}
+
+func (rl *RotatingLogger) Log(level logrus.Level, message string, fields logrus.Fields) {
+	rl.logChannel <- LogMessage{
+		Level:   level,
+		Message: message,
+		Fields:  fields,
+	}
 }
 
 func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
