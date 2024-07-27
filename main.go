@@ -7,16 +7,19 @@ import (
 
 func main() {
 	// Настройки логирования
-	filename := "application-%s.log"
-	datePattern := "2006-01-02-15"
+	logDir := "logs"
+	staticFilename := "application.log"
+	archivePattern := "application-%s.log"
 	zippedArchive := true
-	maxSize := 20  // 20 MB
-	maxFiles := 14 // 14 days
+	maxSize := 1               // 20 MB
+	maxAge := 14               // 14 days
+	maxBackups := 3            // 3 backups
+	checkInterval := time.Hour // Check every hour
 
-	logger := rotatinglogger.NewRotatingLogger(filename, datePattern, zippedArchive, maxSize, maxFiles)
+	logger := rotatinglogger.NewRotatingLogger(logDir, staticFilename, archivePattern, zippedArchive, maxSize, maxAge, maxBackups, checkInterval)
 
 	for {
-		logger.Logger.Info("This is a log message.")
-		time.Sleep(1 * time.Hour)
+		logger.Logger.WithField("appName", "exampleApp").Info("This is a log message.")
+		time.Sleep(1 * time.Second)
 	}
 }
