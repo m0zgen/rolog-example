@@ -3,11 +3,11 @@ package rotatinglogger
 import (
 	"archive/zip"
 	"fmt"
-	"github.com/natefinch/lumberjack"
 	"github.com/sirupsen/logrus"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -25,11 +25,15 @@ type RotatingLogger struct {
 	logDir         string
 	archivePattern string
 	logChannel     chan LogMessage
+	logLevel       logrus.Level
+	maxBackups     int
+	staticFilePath string
 }
 
-func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxAge, maxBackups int, checkInterval time.Duration, bufferSize int) *RotatingLogger {
+func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxBackups int, checkInterval time.Duration, bufferSize int, logLevel logrus.Level) *RotatingLogger {
 	logger := logrus.New()
 
+	logger.SetLevel(logLevel) // Set the logging level
 	logger.Formatter = &JournalctlFormatter{}
 
 	// Ensure log directory exists
@@ -40,14 +44,6 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 
 	staticFilePath := filepath.Join(logDir, staticFilename)
 
-	logger.Out = &lumberjack.Logger{
-		Filename:   staticFilePath,
-		MaxSize:    maxSize,    // megabytes
-		MaxAge:     maxAge,     // days
-		MaxBackups: maxBackups, // backups
-		Compress:   false,      // Disable built-in compression, we'll handle it
-	}
-
 	rotLogger := &RotatingLogger{
 		Logger:         logger,
 		checkInterval:  checkInterval,
@@ -56,7 +52,17 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 		logDir:         logDir,
 		archivePattern: archivePattern,
 		logChannel:     make(chan LogMessage, bufferSize),
+		logLevel:       logLevel,
+		maxBackups:     maxBackups,
+		staticFilePath: staticFilePath,
 	}
+
+	// Set the logger output to the file
+	file, err := os.OpenFile(staticFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		logger.Fatalf("Failed to open log file: %v", err)
+	}
+	logger.SetOutput(file)
 
 	go rotLogger.monitorLogSize(staticFilePath)
 	go rotLogger.processLogMessages()
@@ -66,20 +72,22 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 
 func (rl *RotatingLogger) processLogMessages() {
 	for logMessage := range rl.logChannel {
-		entry := rl.Logger.WithFields(logMessage.Fields)
-		switch logMessage.Level {
-		case logrus.DebugLevel:
-			entry.Debug(logMessage.Message)
-		case logrus.InfoLevel:
-			entry.Info(logMessage.Message)
-		case logrus.WarnLevel:
-			entry.Warn(logMessage.Message)
-		case logrus.ErrorLevel:
-			entry.Error(logMessage.Message)
-		case logrus.FatalLevel:
-			entry.Fatal(logMessage.Message)
-		case logrus.PanicLevel:
-			entry.Panic(logMessage.Message)
+		if logMessage.Level >= rl.logLevel {
+			entry := rl.Logger.WithFields(logMessage.Fields)
+			switch logMessage.Level {
+			case logrus.DebugLevel:
+				entry.Debug(logMessage.Message)
+			case logrus.InfoLevel:
+				entry.Info(logMessage.Message)
+			case logrus.WarnLevel:
+				entry.Warn(logMessage.Message)
+			case logrus.ErrorLevel:
+				entry.Error(logMessage.Message)
+			case logrus.FatalLevel:
+				entry.Fatal(logMessage.Message)
+			case logrus.PanicLevel:
+				entry.Panic(logMessage.Message)
+			}
 		}
 	}
 }
@@ -111,6 +119,17 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 				rl.Logger.Errorf("Failed to rename log file: %v", err)
 				continue
 			}
+
+			// Create a new log file after renaming the old one
+			file, err := os.OpenFile(staticFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+			if err != nil {
+				rl.Logger.Errorf("Failed to create new log file: %v", err)
+				continue
+			}
+			rl.Logger.SetOutput(file)
+
+			rl.Logger.Info("Archive log file name: " + archiveFilename)
+
 			if rl.zippedArchive {
 				if err := zipFile(archiveFilename); err != nil {
 					rl.Logger.Errorf("Failed to zip log file: %v", err)
@@ -118,14 +137,11 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 				}
 				if err := os.Remove(archiveFilename); err != nil {
 					rl.Logger.Errorf("Failed to remove old log file: %v", err)
+					continue
 				}
 			}
 
-			// Create a new log file after renaming the old one
-			_, err = os.Create(staticFilePath)
-			if err != nil {
-				rl.Logger.Errorf("Failed to create new log file: %v", err)
-			}
+			rl.cleanupOldLogs()
 		}
 	}
 }
@@ -166,6 +182,30 @@ func zipFile(source string) error {
 
 	_, err = io.Copy(writer, fileToZip)
 	return err
+}
+
+func (rl *RotatingLogger) cleanupOldLogs() {
+	files, err := filepath.Glob(filepath.Join(rl.logDir, "application-*.log*"))
+	if err != nil {
+		rl.Logger.Errorf("Failed to list log files: %v", err)
+		return
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		fi, _ := os.Stat(files[i])
+		fj, _ := os.Stat(files[j])
+		return fi.ModTime().Before(fj.ModTime())
+	})
+
+	if len(files) > rl.maxBackups {
+		for _, file := range files[:len(files)-rl.maxBackups] {
+			if err := os.Remove(file); err != nil {
+				rl.Logger.Errorf("Failed to remove old log file: %v", err)
+			} else {
+				rl.Logger.Infof("Removed old log file: %s", file)
+			}
+		}
+	}
 }
 
 // JournalctlFormatter formats logs in a style similar to journalctl
