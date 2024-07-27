@@ -1,5 +1,7 @@
 application*
 rolog*
 
+logs
+
 .idea
 .DS_Store
