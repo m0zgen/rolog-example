@@ -2,6 +2,7 @@ application*
 rolog*
 
 logs
+tmp
 
 .idea
 .DS_Store
