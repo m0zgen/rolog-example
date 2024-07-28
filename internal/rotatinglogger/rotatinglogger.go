@@ -2,6 +2,7 @@ package rotatinglogger
 
 import (
 	"archive/zip"
+	"bufio"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"io"
@@ -28,6 +29,7 @@ type RotatingLogger struct {
 	logLevel       logrus.Level
 	maxBackups     int
 	staticFilePath string
+	multiWriter    *bufio.Writer
 }
 
 func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxBackups int, checkInterval time.Duration, bufferSize int, logLevel logrus.Level) *RotatingLogger {
@@ -44,6 +46,21 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 
 	staticFilePath := filepath.Join(logDir, staticFilename)
 
+	// Set the logger output to the file
+	file, err := os.OpenFile(staticFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		logger.Fatalf("Failed to open log file: %v", err)
+	}
+	//logger.SetOutput(file)
+	//multiWriter := io.Writer(file)
+	multiWriter := bufio.NewWriter(file)
+	//if config.EnableConsoleLogging {
+	//	// Create multiwriter for logging to file and stdout
+	//	multiWriter = io.MultiWriter(logFile, os.Stdout)
+	//  multiWriter := io.MultiWriter(fileWriter, os.Stdout)
+	//}
+	logger.SetOutput(multiWriter)
+
 	rotLogger := &RotatingLogger{
 		Logger:         logger,
 		checkInterval:  checkInterval,
@@ -55,14 +72,8 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 		logLevel:       logLevel,
 		maxBackups:     maxBackups,
 		staticFilePath: staticFilePath,
+		multiWriter:    multiWriter,
 	}
-
-	// Set the logger output to the file
-	file, err := os.OpenFile(staticFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		logger.Fatalf("Failed to open log file: %v", err)
-	}
-	logger.SetOutput(file)
 
 	go rotLogger.monitorLogSize(staticFilePath)
 	go rotLogger.processLogMessages()
@@ -88,6 +99,7 @@ func (rl *RotatingLogger) processLogMessages() {
 			case logrus.PanicLevel:
 				entry.Panic(logMessage.Message)
 			}
+			rl.multiWriter.Flush()
 		}
 	}
 }
@@ -114,6 +126,7 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 		if fileInfo.Size() > int64(rl.maxSize*1024*1024) {
 			now := time.Now()
 			archiveFilename := filepath.Join(rl.logDir, fmt.Sprintf(rl.archivePattern, now.Format("2006-01-02-15-04-05")))
+			rl.multiWriter.Flush()
 			err := os.Rename(staticFilePath, archiveFilename)
 			if err != nil {
 				rl.Logger.Errorf("Failed to rename log file: %v", err)
@@ -126,7 +139,9 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 				rl.Logger.Errorf("Failed to create new log file: %v", err)
 				continue
 			}
-			rl.Logger.SetOutput(file)
+			//rl.Logger.SetOutput(file)
+			multiWriter := bufio.NewWriter(file)
+			rl.Logger.SetOutput(multiWriter)
 
 			rl.Logger.Info("Archive log file name: " + archiveFilename)
 
