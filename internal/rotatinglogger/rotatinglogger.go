@@ -30,9 +30,10 @@ type RotatingLogger struct {
 	maxBackups     int
 	staticFilePath string
 	multiWriter    *bufio.Writer
+	consoleOut     bool
 }
 
-func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxBackups int, checkInterval time.Duration, bufferSize int, logLevel logrus.Level) *RotatingLogger {
+func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArchive bool, maxSize, maxBackups int, checkInterval time.Duration, bufferSize int, logLevel logrus.Level, consoleOut bool) *RotatingLogger {
 	logger := logrus.New()
 
 	logger.SetLevel(logLevel) // Set the logging level
@@ -52,14 +53,16 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 		logger.Fatalf("Failed to open log file: %v", err)
 	}
 	//logger.SetOutput(file)
+
 	//multiWriter := io.Writer(file)
 	multiWriter := bufio.NewWriter(file)
-	//if config.EnableConsoleLogging {
-	//	// Create multiwriter for logging to file and stdout
-	//	multiWriter = io.MultiWriter(logFile, os.Stdout)
-	//  multiWriter := io.MultiWriter(fileWriter, os.Stdout)
-	//}
-	logger.SetOutput(multiWriter)
+	if consoleOut {
+		fWriter := io.Writer(file)
+		mWriter := io.MultiWriter(fWriter, os.Stdout)
+		logger.SetOutput(mWriter)
+	} else {
+		logger.SetOutput(multiWriter)
+	}
 
 	rotLogger := &RotatingLogger{
 		Logger:         logger,
@@ -73,6 +76,7 @@ func NewRotatingLogger(logDir, staticFilename, archivePattern string, zippedArch
 		maxBackups:     maxBackups,
 		staticFilePath: staticFilePath,
 		multiWriter:    multiWriter,
+		consoleOut:     consoleOut,
 	}
 
 	go rotLogger.monitorLogSize(staticFilePath)
@@ -127,6 +131,10 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 			now := time.Now()
 			archiveFilename := filepath.Join(rl.logDir, fmt.Sprintf(rl.archivePattern, now.Format("2006-01-02-15-04-05")))
 			rl.multiWriter.Flush()
+
+			logrus.Infof("Log file size exceeded the limit. Renamed log file to: %s", archiveFilename)
+			rl.Logger.Infof("Log file size exceeded the limit. Renamed log file to: "+archiveFilename, logrus.Fields{"appName": "MyApp"})
+
 			err := os.Rename(staticFilePath, archiveFilename)
 			if err != nil {
 				rl.Logger.Errorf("Failed to rename log file: %v", err)
@@ -140,10 +148,20 @@ func (rl *RotatingLogger) monitorLogSize(staticFilePath string) {
 				continue
 			}
 			//rl.Logger.SetOutput(file)
-			multiWriter := bufio.NewWriter(file)
-			rl.Logger.SetOutput(multiWriter)
 
-			rl.Logger.Info("Archive log file name: " + archiveFilename)
+			//multiWriter := io.Writer(file)
+			multiWriter := bufio.NewWriter(file)
+			//rl.Logger.SetOutput(multiWriter)
+
+			if rl.consoleOut {
+				fWriter := io.Writer(file)
+				mWriter := io.MultiWriter(fWriter, os.Stdout)
+				rl.Logger.SetOutput(mWriter)
+			} else {
+				rl.Logger.SetOutput(multiWriter)
+			}
+
+			rl.Logger.WithFields(logrus.Fields{"appName": "MyApp"}).Infof("Archive log file name: " + archiveFilename)
 
 			if rl.zippedArchive {
 				if err := zipFile(archiveFilename); err != nil {
@@ -217,7 +235,7 @@ func (rl *RotatingLogger) cleanupOldLogs() {
 			if err := os.Remove(file); err != nil {
 				rl.Logger.Errorf("Failed to remove old log file: %v", err)
 			} else {
-				rl.Logger.Infof("Removed old log file: %s", file)
+				rl.Logger.WithFields(logrus.Fields{"appName": "MyApp"}).Infof("Removed old log file: %s", file)
 			}
 		}
 	}
