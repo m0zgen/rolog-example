@@ -14,9 +14,9 @@ func init() {
 	staticFilename := "application.log"
 	archivePattern := "application-%s.log"
 	zippedArchive := true        // Enable zipped archive
-	maxSize := 20                // 20 MB
+	maxSize := 1                 // 1 MB
 	maxBackups := 3              // 3 backups
-	checkInterval := time.Hour   // Check every hour
+	checkInterval := time.Second // Check every second
 	bufferSize := 100            // Size of the log message buffer
 	logLevel := logrus.InfoLevel // Set the log level to Info
 
